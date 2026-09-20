@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Optional, List, TypedDict
 from dotenv import load_dotenv
 from langchain_ollama import OllamaLLM
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 
 load_dotenv()
@@ -44,6 +44,68 @@ class AgentStateDict(TypedDict):
     error: Optional[str]
 
 class MultiAgentOrchestrator:
+    # Define system prompts as class constants
+    SYSTEM_PROMPTS = {
+        AgentType.CODE_GENERATOR: """You are an expert software developer with 20+ years of experience.
+
+Role & Expertise:
+- Proficient in Python, JavaScript, Java, and Go
+- Deep knowledge of design patterns and SOLID principles
+- Expert in security, performance, and scalability
+
+Behavioral Guidelines:
+- Always write production-ready code
+- Include comprehensive error handling
+- Follow language-specific best practices
+- Add helpful comments for complex sections
+
+Output Format:
+- Use markdown code blocks with language specification
+- Include docstrings/comments explaining the logic
+- Provide usage examples where helpful
+- Mention any assumptions or dependencies""",
+
+        AgentType.DATA_ANALYST: """You are an expert data analyst and statistician.
+
+Role & Expertise:
+- Statistical analysis and hypothesis testing
+- Data visualization and insight generation
+- Business intelligence and KPI analysis
+- Trend forecasting and anomaly detection
+
+Behavioral Guidelines:
+- Always cite data sources and assumptions
+- Use precise statistical language
+- Provide confidence intervals where applicable
+- Highlight anomalies and patterns
+
+Output Format:
+- Structure findings with clear headings
+- Use numerical precision (avoid vague terms)
+- Provide actionable insights
+- Suggest visualization approaches""",
+
+        AgentType.PLANNER: """You are an expert project manager and strategic planner.
+
+Role & Expertise:
+- Project decomposition and milestone planning
+- Risk assessment and mitigation
+- Resource allocation and timeline estimation
+- Dependency identification and critical path analysis
+
+Behavioral Guidelines:
+- Create structured, hierarchical plans
+- Identify dependencies explicitly
+- Assess risks with mitigation strategies
+- Provide realistic time estimates
+
+Output Format:
+- Use numbered lists for phases
+- Include timeline estimates
+- List risks and mitigation approaches
+- Define success criteria""",
+    }
+    
     def __init__(self):
         self.llm = OllamaLLM(
             model=os.getenv("MODEL_NAME"),
@@ -96,91 +158,117 @@ class MultiAgentOrchestrator:
     
     def _route_node(self, state: AgentState) -> AgentState:
         """Route task synchronously"""
-        routing_prompt = f"""Analyze this task and select the best agent.
-
-Task: {state.task}
+        system_msg = SystemMessage(
+            content="""You are an intelligent task router. Analyze tasks and select the best specialist agent.
 
 Available agents:
-- code_generator: For software development, debugging, code optimization
-- data_analyst: For data analysis, statistics, insights
-- planner: For task decomposition, planning, risk assessment
+- code_generator: Software development, code generation, debugging
+- data_analyst: Data analysis, statistics, insights
+- planner: Task decomposition, project planning, risk assessment
 
-Respond with exactly this format:
+Respond with:
 AGENT: [agent_name]
 CONFIDENCE: [0.0-1.0]
 REASONING: [brief explanation]"""
-
-        try:
-            response = self.llm.invoke(routing_prompt)
-            
-            lines = response.strip().split('\n')
-            agent = "planner"
-            confidence = 0.5
-            reasoning = ""
-            
-            for line in lines:
-                if line.startswith("AGENT:"):
-                    agent_name = line.replace("AGENT:", "").strip().lower()
-                    if agent_name in [a.value for a in AgentType]:
-                        agent = agent_name
-                elif line.startswith("CONFIDENCE:"):
-                    try:
-                        confidence = float(line.replace("CONFIDENCE:", "").strip())
-                    except ValueError:
-                        pass
-                elif line.startswith("REASONING:"):
-                    reasoning = line.replace("REASONING:", "").strip()
-            
-            state.selected_agent = AgentType(agent)
-            state.complexity_score = confidence
-            state.routing_reason = reasoning
-            
-            logger.info(f"[{state.task_id}] Routed to {state.selected_agent.value}")
-            
-        except Exception as e:
-            logger.error(f"Routing error: {e}")
-            state.selected_agent = AgentType.PLANNER
-            state.error = str(e)
+        )
+        
+        user_msg = HumanMessage(
+            content=f"Route this task to the best agent:\n\n{state.task}"
+        )
+        
+        all_messages = [system_msg, user_msg]
+        response = self.llm.invoke(all_messages)
+        
+        lines = response.strip().split('\n')
+        agent = "planner"
+        confidence = 0.5
+        reasoning = ""
+        
+        for line in lines:
+            if line.startswith("AGENT:"):
+                agent_name = line.replace("AGENT:", "").strip().lower()
+                if agent_name in [a.value for a in AgentType]:
+                    agent = agent_name
+            elif line.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.replace("CONFIDENCE:", "").strip())
+                except ValueError:
+                    pass
+            elif line.startswith("REASONING:"):
+                reasoning = line.replace("REASONING:", "").strip()
+        
+        state.selected_agent = AgentType(agent)
+        state.complexity_score = confidence
+        state.routing_reason = reasoning
+        
+        logger.info(f"[{state.task_id}] Routed to {state.selected_agent.value}")
         
         return state
     
 
     def _code_generator_node(self, state: AgentState) -> AgentState:
-        """Code generator node"""
-        prompt = f"""You are an expert software developer.
-
-Task: {state.task}
-
-Provide complete, working code with documentation."""
+        """Code generator node with proper role-based messages"""
+        # Build message history with proper roles
+        messages = state.messages.copy()
         
-        response = self.llm.invoke(prompt)
+        # Add system message (defines role)
+        system_msg = SystemMessage(
+            content=self.SYSTEM_PROMPTS[AgentType.CODE_GENERATOR]
+        )
+        
+        # Add task as human message (user instruction)
+        user_msg = HumanMessage(
+            content=f"Task: {state.task}\n\nGenerate production-ready code."
+        )
+        
+        # Build complete message stack
+        all_messages = [system_msg, user_msg]
+        
+        # Invoke LLM with proper message roles
+        response = self.llm.invoke(all_messages)
+        
+        # Add AI response to history
         state.result = response
         state.messages.append(AIMessage(content=response))
+        
         return state
     
 
     def _data_analyst_node(self, state: AgentState) -> AgentState:
-        """Data analyst node"""
-        prompt = f"""You are an expert data analyst.
-
-Task: {state.task}
-
-Provide key findings and insights."""
+        """Data analyst node with proper role-based messages"""
+        messages = state.messages.copy()
         
-        response = self.llm.invoke(prompt)
+        system_msg = SystemMessage(
+            content=self.SYSTEM_PROMPTS[AgentType.DATA_ANALYST]
+        )
+        
+        user_msg = HumanMessage(
+            content=f"Analyze the following: {state.task}\n\nProvide detailed statistical insights."
+        )
+        
+        all_messages = [system_msg, user_msg]
+        response = self.llm.invoke(all_messages)
+        
         state.result = response
         state.messages.append(AIMessage(content=response))
+        
         return state
     
     def _planner_node(self, state: AgentState) -> AgentState:
-        """Planner node"""
-        prompt = f"""You are an expert project planner.
-
-Task: {state.task}
-
-Provide step-by-step breakdown and timeline."""
+        """Planner node with proper role-based messages"""
+        messages = state.messages.copy()
         
-        response = self.llm.invoke(prompt)
+        system_msg = SystemMessage(
+            content=self.SYSTEM_PROMPTS[AgentType.PLANNER]
+        )
+        
+        user_msg = HumanMessage(
+            content=f"Create a detailed plan for: {state.task}\n\nInclude phases, timeline, and risks."
+        )
+        
+        all_messages = [system_msg, user_msg]
+        response = self.llm.invoke(all_messages)
+        
         state.result = response
         state.messages.append(AIMessage(content=response))
         return state

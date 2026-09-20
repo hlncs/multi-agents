@@ -86,10 +86,73 @@ Built-in metrics collection for optimization:
 - **Routing Overhead**: Time spent in routing decision
 - **Total Workflow Time**: End-to-end execution time
 
+### 5. **Prompt Engineering**
+Each agent uses role-based system prompts to define behavior:
+- **System Prompt**: Defines agent role, expertise, and behavior
+- **User Message**: Contains the actual task or instruction
+- **Assistant Response**: Generated output based on system + user context
+- **Conversation History**: Maintains context across multi-turn interactions
+
+## 💡 Message Role Architecture
+
+The system uses three core message roles from LangChain:
+
+### 1. **SystemMessage** - Defines Agent Role & Behavior
+```python
+SystemMessage(content="You are an expert software developer...")
+```
+- Sets agent's expertise and personality
+- Defines behavioral constraints
+- Specifies output format expectations
+- Injected at the beginning of every agent execution
+
+### 2. **HumanMessage** - User Task/Instruction
+```python
+HumanMessage(content="Generate a Python function to parse CSV files")
+```
+- The actual task to be completed
+- User's instruction to the agent
+- Contains task-specific context
+
+### 3. **AIMessage** - Model Response
+```python
+AIMessage(content="```python\ndef parse_csv(...):\n...```")
+```
+- LLM's generated response
+- Stored in conversation history
+- Used for context in follow-up tasks
+
+### Message Flow Example
+
+```
+SystemMessage:   "You are an expert software developer. Focus on..."
+HumanMessage:    "Generate a Python function to parse CSV files"
+                                    ↓ (LLM Processing)
+AIMessage:       "```python\ndef parse_csv(...):\n...```"
+                 ↓ (Stored in history for future context)
+```
+
+Each agent maintains this proper role hierarchy for consistent, predictable behavior.
+
 ## 🤖 Specialist Agents
 
 ### Code Generator Agent
-**Purpose**: Software development, code generation, debugging, and optimization
+
+**System Prompt Role**:
+```
+You are an expert software developer with deep knowledge of:
+- Multiple programming languages (Python, JavaScript, Java, etc.)
+- Design patterns and best practices
+- Security and performance optimization
+- Code documentation and testing
+```
+
+**Message Flow**:
+```
+SYSTEM:   "You are an expert software developer..."
+USER:     "Write a Python function to parse CSV files"
+ASSISTANT: [Generates well-documented, tested code]
+```
 
 **Capabilities**:
 - `code_generation` - Create new code from specifications
@@ -113,7 +176,22 @@ Built-in metrics collection for optimization:
 ---
 
 ### Data Analyst Agent
-**Purpose**: Data analysis, statistical insights, trend identification, and business intelligence
+
+**System Prompt Role**:
+```
+You are an expert data analyst and statistician with expertise in:
+- Statistical analysis and hypothesis testing
+- Data visualization and insight generation
+- Business intelligence and KPI analysis
+- Trend forecasting and anomaly detection
+```
+
+**Message Flow**:
+```
+SYSTEM:   "You are an expert data analyst..."
+USER:     "Analyze these sales trends: Q1: $125K, Q2: $142K..."
+ASSISTANT: [Generates statistical insights and recommendations]
+```
 
 **Capabilities**:
 - `data_analysis` - Analyze datasets and patterns
@@ -137,7 +215,22 @@ Built-in metrics collection for optimization:
 ---
 
 ### Planner Agent
-**Purpose**: Task decomposition, project planning, risk assessment, and resource allocation
+
+**System Prompt Role**:
+```
+You are an expert project manager and strategic planner with skills in:
+- Project decomposition and milestone planning
+- Risk assessment and mitigation
+- Resource allocation and timeline estimation
+- Dependency identification and critical path analysis
+```
+
+**Message Flow**:
+```
+SYSTEM:   "You are an expert project planner..."
+USER:     "Create a plan for implementing microservices"
+ASSISTANT: [Generates structured plan with phases, risks, timeline]
+```
 
 **Capabilities**:
 - `task_decomposition` - Break complex tasks into steps
@@ -160,8 +253,51 @@ Built-in metrics collection for optimization:
 
 ---
 
+### Router Agent
+
+**System Prompt Role**:
+```
+You are an intelligent task router responsible for analyzing incoming tasks and selecting the most appropriate specialist agent.
+
+Your expertise includes:
+- Task classification and complexity assessment
+- Domain-to-agent matching
+- Confidence scoring based on task-agent fit
+- Graceful fallback mechanisms
+```
+
+**Message Flow**:
+```
+SYSTEM:   "You are an intelligent task router..."
+USER:     "Write a Python function to parse CSV files"
+ASSISTANT: [Routes to code_generator with 0.92 confidence]
+```
+
+**Routing Logic**:
+- Analyzes task keywords and context
+- Computes complexity score (0.0-1.0)
+- Selects best-fit agent with confidence
+- Provides reasoning for routing decision
+
+---
+
 ### Summarizer Agent
-**Purpose**: Consolidate results into executive summaries and actionable recommendations
+
+**System Prompt Role**:
+```
+You are an expert executive summarizer skilled in:
+- Distilling complex information into key points
+- Generating clear, actionable recommendations
+- Executive-level communication and clarity
+- Synthesizing diverse information sources
+```
+
+**Message Flow**:
+```
+SYSTEM:   "You are an expert summarizer..."
+USER:     "Summarize this detailed analysis..."
+ASSISTANT: [Generates concise executive summary]
+```
 
 **Capabilities**:
 - `summary_generation` - Condense lengthy outputs
@@ -191,25 +327,47 @@ The Router Agent receives the task and determines:
 - Best matching specialist agent
 - Confidence and reasoning
 
-**Example Routing Decision**:
+**Message Stack at Routing**:
 ```
-AGENT: code_generator
-CONFIDENCE: 0.92
-REASONING: Task requires code generation with data file handling
+SYSTEM:  "You are an intelligent task router..."
+USER:    "Generate a Python function to analyze CSV files"
+ASSISTANT: 
+  AGENT: code_generator
+  CONFIDENCE: 0.92
+  REASONING: Task requires code generation with data file handling
 ```
 
 ### Step 3: Specialist Execution
 Selected agent executes with:
 - System prompt injection for domain expertise
-- LLM invocation with full message history
-- Response generation and formatting
-- Automatic performance metrics collection
+- Full message history for context
+- User task as the primary instruction
+- Response generation with specialized knowledge
+
+**Message Stack at Execution**:
+```
+SYSTEM:  "You are an expert software developer..."
+USER:    "Generate a Python function to analyze CSV files"
+ASSISTANT: 
+  ```python
+  def parse_csv(filepath):
+      """Parse CSV file and return data."""
+      ...
+  ```
+```
 
 ### Step 4: Summary Generation
 Summarizer agent processes the result:
 - Extracts key findings
 - Generates executive summary
 - Provides actionable recommendations
+
+**Message Stack at Summarization**:
+```
+SYSTEM:  "You are an expert executive summarizer..."
+USER:    "Summarize this code generation task: [previous result]"
+ASSISTANT: "Key Points: Generated function provides robust CSV..."
+```
 
 ### Step 5: Output Formatting
 Final state includes:
@@ -219,6 +377,64 @@ Final state includes:
 - Performance report
 - Routing information
 - Error details (if any)
+
+## 💡 System Prompt Best Practices
+
+### Effective System Prompts
+
+**Good System Prompt** (Specific, Role-Based):
+```
+You are an expert Python developer specializing in data processing.
+Focus on:
+- Clean, readable code following PEP 8 standards
+- Comprehensive error handling
+- Performance optimization for large datasets
+- Detailed comments explaining complex logic
+```
+
+**Poor System Prompt** (Vague):
+```
+You are a programmer. Write code.
+```
+
+### Key Elements of System Prompts
+
+1. **Role Definition**: Clear statement of expertise and responsibility
+2. **Behavioral Constraints**: What the agent should and shouldn't do
+3. **Output Format**: Expected structure and style of responses
+4. **Domain Expertise**: Specific knowledge and best practices
+5. **Quality Standards**: Expectations for quality and completeness
+
+### Example: Code Generator System Prompt
+
+```
+You are an expert software developer with 20+ years of experience.
+
+Role & Expertise:
+- Proficient in Python, JavaScript, Java, and Go
+- Deep knowledge of design patterns and SOLID principles
+- Expert in security, performance, and scalability
+- Experienced with testing frameworks and CI/CD
+
+Behavioral Guidelines:
+- Always write production-ready code
+- Include comprehensive error handling
+- Follow language-specific best practices
+- Add helpful comments for complex sections
+- Suggest optimizations when appropriate
+
+Output Format:
+- Use markdown code blocks with language specification
+- Include docstrings/comments explaining the logic
+- Provide usage examples where helpful
+- Mention any assumptions or dependencies
+
+Quality Standards:
+- Code must be tested and validated
+- Security vulnerabilities must be avoided
+- Performance should be optimized where reasonable
+- Documentation must be clear and complete
+```
 
 ## 🔧 Setup Instructions - Ollama
 
@@ -286,7 +502,7 @@ source .venv/bin/activate  # macOS/Linux
 # Upgrade pip first
 pip install --upgrade pip
 
-# Install required packages
+# Install required packages (with Ollama support)
 pip install langchain langchain-core langchain-community langchain-ollama
 pip install langgraph python-dotenv
 
@@ -357,12 +573,13 @@ asyncio.run(main())
 - **Memory**: ~8GB RAM required
 - **Speed**: ~15-25 tokens/second on M1/M2 Mac
 - **Quality**: Excellent for general tasks and code generation
+- **Chat Optimized**: Model is fine-tuned for conversational tasks
 
 ### Alternative Models
 
 **Smaller/Faster:**
 ```bash
-ollama pull llama3.2:3b    # 3B params, faster
+ollama pull llama3.2:3b    # 3B params, faster inference
 ollama pull mistral:latest # 7B params, good quality
 ```
 
@@ -393,6 +610,85 @@ ollama pull nomic-embed-text:latest
 
 ### Performance Tuning Tips
 
-- For faster response, use smaller models like `llama3.2:3b`.
-- For better quality, especially in code generation, use `llama2:70b-chat-q4_K_M`.
-- Adjust `N_GPU_LAYERS` and `N_THREADS` in `.env` based on your system's GPU and CPU capabilities.
+- For faster response, use smaller models like `llama3.2:3b`
+- For better quality code, use `llama2:70b-chat-q4_K_M`
+- Adjust system prompts to be more concise for faster inference
+- Use `temperature=0.3` for consistent routing decisions
+- Use `temperature=0.7` for creative code generation
+
+## 🛡️ Error Handling
+
+### Common Issues
+
+**Issue**: "Connection refused on http://127.0.0.1:11434"
+```bash
+# Solution: Start Ollama server
+ollama serve
+```
+
+**Issue**: "Model llama2:13b-chat-q4_K_M not found"
+```bash
+# Solution: Pull the model
+ollama pull llama2:13b-chat-q4_K_M
+```
+
+**Issue**: "Out of memory" errors
+```bash
+# Solution: Use smaller model
+ollama pull llama3.2:3b
+# Update .env with MODEL_NAME=llama3.2:3b
+```
+
+**Issue**: Slow inference
+```bash
+# Check if Ollama is using GPU (ideal):
+ollama ps
+
+# If CPU only, consider:
+# 1. Use smaller model (3b instead of 13b)
+# 2. Reduce context length
+# 3. Add GPU support (CUDA/Metal)
+```
+
+## 🔐 Security Considerations
+
+- **No Human-in-the-Loop**: Code execution happens automatically
+- **Sandboxing**: Run with restricted user account
+- **Code Review**: Always review generated code before production use
+- **Limited Scope**: Use for development/testing, not production systems
+- **Network Isolation**: Keep Ollama on localhost only
+- **Prompt Injection**: System prompts define strict boundaries
+
+## 🚀 Production Deployment
+
+For production use, consider:
+
+1. **Model Selection**: Use larger model (70B) for better quality
+2. **Hardware**: GPU acceleration (CUDA/Metal) for faster inference
+3. **Scaling**: Deploy Ollama on dedicated server with load balancing
+4. **Monitoring**: Implement logging and metrics collection
+5. **Code Review**: Add human validation step before code execution
+6. **Sandboxing**: Use containers (Docker) for execution isolation
+7. **System Prompts**: Refine system prompts based on production patterns
+
+## 📚 Additional Resources
+
+- [Ollama Documentation](https://ollama.ai)
+- [LangChain Documentation](https://python.langchain.com)
+- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
+- [Meta Llama 2 Model Card](https://huggingface.co/meta-llama/Llama-2-13b-chat)
+- [Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
+
+## 🤝 Contributing
+
+Contributions welcome! Areas for improvement:
+- Additional specialist agents
+- Better routing heuristics
+- Performance optimization
+- Production deployment patterns
+- Extended test coverage
+- System prompt optimization
+
+## 📝 License
+
+MIT License - See LICENSE file for details
