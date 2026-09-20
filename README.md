@@ -35,16 +35,16 @@ It is autonomous in nature, using a restricted and bounded sandbox is highly rec
         │                     │          │          │
         ▼                     ▼          ▼          ▼
    ┌─────────┐          ┌──────────┐ ┌────────┐ ┌────────┐
-   │  Code   │          │   Data   │ │Planner │ │Fallback│
-   │Generator│          │ Analyst  │ │        │ │ Logic  │
+   │  Code   │          │   Data   │ │Planner │ │Summarize
+   │Generator│          │ Analyst  │ │        │ │        │
    └─────────┘          └──────────┘ └────────┘ └────────┘
         │                     │          │          │
         └─────────────────────┴──────────┴──────────┘
                        │
                        ▼
         ┌──────────────────────────────┐
-        │  State Management & Tracking │
-        │  - Message history           │
+        │  Summary & Output Formatting │
+        │  - Executive summary         │
         │  - Performance metrics       │
         │  - Error handling            │
         └──────────┬───────────────────┘
@@ -158,6 +158,21 @@ Built-in metrics collection for optimization:
 - "What are the risks and dependencies?"
 - "How long will this take with current resources?"
 
+---
+
+### Summarizer Agent
+**Purpose**: Consolidate results into executive summaries and actionable recommendations
+
+**Capabilities**:
+- `summary_generation` - Condense lengthy outputs
+- `key_point_extraction` - Identify main findings
+- `recommendation_synthesis` - Generate actionable insights
+
+**System Prompt Focus**:
+- Conciseness and clarity
+- Executive-level language
+- Emphasis on actionable items
+
 ## 🔄 Workflow Execution Flow
 
 ### Step 1: Task Ingestion
@@ -177,13 +192,10 @@ The Router Agent receives the task and determines:
 - Confidence and reasoning
 
 **Example Routing Decision**:
-```json
-{
-    "selected_agent": "code_generator",
-    "complexity_score": 0.65,
-    "reasoning": "Task requires code generation with data file handling",
-    "confidence": 0.92
-}
+```
+AGENT: code_generator
+CONFIDENCE: 0.92
+REASONING: Task requires code generation with data file handling
 ```
 
 ### Step 3: Specialist Execution
@@ -193,180 +205,113 @@ Selected agent executes with:
 - Response generation and formatting
 - Automatic performance metrics collection
 
-### Step 4: Metrics Collection
-Each execution records:
-```python
-PerformanceMetrics(
-    agent_type=AgentType.CODE_GENERATOR,
-    latency_ms=1234.56,
-    tokens_used=2156,
-    task_id="abc123",
-    timestamp=1695234567.89
-)
-```
+### Step 4: Summary Generation
+Summarizer agent processes the result:
+- Extracts key findings
+- Generates executive summary
+- Provides actionable recommendations
 
 ### Step 5: Output Formatting
 Final state includes:
 - Agent's response/result
+- Executive summary
 - Full message history
 - Performance report
 - Routing information
 - Error details (if any)
 
-## 📊 Performance Monitoring
-
-### Metrics Collected
-
-**Per-Agent Metrics**:
-- **Latency (ms)**: Time from invocation to response
-- **Tokens Used**: Estimated token consumption
-- **Task ID**: Link to specific task
-- **Timestamp**: When execution occurred
-
-**Aggregate Metrics**:
-- Total workflow latency
-- Total token usage across agents
-- Router overhead time
-- Agent-specific performance trends
-
-### Performance Report Example
-
-```
-============================================================
-Performance Report - Task abc12345
-============================================================
-
-Agent: ROUTER
-  Latency: 234.56ms
-  Tokens Used: 342
-
-Agent: CODE_GENERATOR
-  Latency: 1892.34ms
-  Tokens Used: 2156
-
-Total Latency: 2126.90ms
-Total Tokens: 2498
-Selected Agent: code_generator
-Task Complexity: 0.65/1.0
-Routing Reason: Task requires code generation with data file handling
-============================================================
-```
-
-## 🛡️ Error Handling & Fallback Mechanisms
-
-### Routing Fallback Strategy
-
-If JSON parsing fails or LLM returns invalid agent type:
-1. **Keyword Matching**: Check task for domain keywords
-2. **Default Agent**: Fall back to Planner agent
-3. **Confidence Reduction**: Mark as lower-confidence routing
-4. **Error Logging**: Record fallback usage for monitoring
-
-**Keyword Mapping**:
-```python
-{
-    "code": CodeGeneratorAgent,
-    "debug": CodeGeneratorAgent,
-    "data": DataAnalystAgent,
-    "analyze": DataAnalystAgent,
-    "plan": PlannerAgent,
-    "task": PlannerAgent,
-}
-```
-
-### Execution Error Handling
-
-- **Try-Catch Blocks**: Wrap all LLM invocations
-- **State Preservation**: Maintain state even on error
-- **Error Logging**: Detailed error messages and stack traces
-- **Graceful Degradation**: Return partial results when possible
-
-## 🔧 Setup Instructions
-
-### Prerequisites
-- Python 3.10+
-- LangChain and Langgraph
-- llama.cpp for local inference
-- Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf model
-
-### Installation
-
-```bash
-# Clone repository
-git clone https://github.com/hlncs/multi-agents
-cd multi-agents
-
-# Install dependencies
-pip install langchain langgraph python-dotenv
-
-# Install llama-cpp-python for local inference
-pip install llama-cpp-python
-
-# Download the quantized model
-# Option 1: Using huggingface-hub
-pip install huggingface-hub
-huggingface-cli download TheBloke/Llama-2-7B-Chat-GGUF llama-2-7b-chat.Q4_K_M.gguf --local-dir ./models
-
-# Option 2: Manual download from Hugging Face
-# https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF
-```
-
-### Configuration
-
-Create `.env` file:
-```env
-MODEL_PATH=./models/llama-2-7b-chat.Q4_K_M.gguf
-N_GPU_LAYERS=35
-N_THREADS=8
-LOG_LEVEL=INFO
-```
-
-### Running the System
-
-```bash
-python multi_agent_system.py
-python example_workflows.py
-```
-
 ## 🔧 Setup Instructions - Ollama
 
 ### Prerequisites
-- Ollama installed and running
-- Model: `llama2:123-chat-Q4_K_M` or compatible
+- **Ollama** installed and running (https://ollama.ai)
+- **Python 3.11+** (Python 3.12 or 3.13 recommended)
+- Compatible quantized model
 
 ### Installation
 
+#### Step 1: Install Ollama
+
+**macOS:**
 ```bash
-# Install Ollama
-# Visit: https://ollama.ai or
+# Install via Homebrew
 brew install ollama
 
-# Pull the model
-ollama pull llama2:123-chat-Q4_K_M
+# Or download from https://ollama.ai
+```
 
-# Start Ollama server (in separate terminal)
+**Linux:**
+```bash
+curl -fsSL https://ollama.ai/install.sh | sh
+```
+
+**Windows:**
+Download from https://ollama.ai/download
+
+#### Step 2: Pull the Model
+
+```bash
+# Pull the recommended model
+ollama pull llama2:13b-chat-q4_K_M
+
+# Alternative models (smaller/faster):
+ollama pull llama3.2:3b
+ollama pull mistral:latest
+```
+
+#### Step 3: Start Ollama Server
+
+```bash
+# Terminal 1: Start Ollama (runs on http://127.0.0.1:11434 by default)
 ollama serve
-# Server runs on http://localhost:11434 by default
+
+# Verify it's running:
+curl http://127.0.0.1:11434/api/tags
+```
+
+#### Step 4: Set Up Python Environment
+
+```bash
+# Create virtual environment with Python 3.11+
+python3.11 -m venv .venv
+
+# Activate it
+source .venv/bin/activate  # macOS/Linux
+# OR
+.venv\Scripts\activate  # Windows
+```
+
+#### Step 5: Install Dependencies
+
+```bash
+# Upgrade pip first
+pip install --upgrade pip
+
+# Install required packages
+pip install langchain langchain-core langchain-community langchain-ollama
+pip install langgraph python-dotenv
+
+# Verify installations
+pip list | grep langchain
 ```
 
 ### Configuration
 
-Create `.env` file:
+Create `.env` file in your project root:
+
 ```env
-MODEL_PATH=http://localhost:53985
-MODEL_NAME=llama2:123-chat-Q4_K_M
+# filepath: .env
+MODEL_PATH=http://127.0.0.1:11434
+MODEL_NAME=llama2:13b-chat-q4_K_M
 LOG_LEVEL=INFO
 ```
 
-### Installation Dependencies
+### Verify Setup
 
 ```bash
-# Create venv with Python 3.11
-python3.11 -m venv .venv
-source .venv/bin/activate
+# Test Ollama connection
+curl http://127.0.0.1:11434/api/tags
 
-# Install dependencies
-pip install langchain langgraph python-dotenv langchain-community
+# Expected output: Lists available models including llama2:13b-chat-q4_K_M
 ```
 
 ### Running the System
@@ -375,7 +320,8 @@ pip install langchain langgraph python-dotenv langchain-community
 # Terminal 1: Start Ollama
 ollama serve
 
-# Terminal 2: Run multi-agent system
+# Terminal 2: Activate venv and run
+source .venv/bin/activate
 python multi_agent_system.py
 ```
 
@@ -394,47 +340,59 @@ async def main():
     result = await orchestrator.process_task(task)
     
     # Print results
-    print(f"Result: {result.result}")
-    print(f"Selected Agent: {result.selected_agent}")
-    print(f"Complexity: {result.complexity_score:.2f}")
+    print(f"Selected Agent: {result.selected_agent.value}")
+    print(f"Complexity Score: {result.complexity_score:.2f}")
+    print(f"Routing Reason: {result.routing_reason}")
+    print(f"\nResult:\n{result.result}")
 
 asyncio.run(main())
 ```
 
-### Model Specifications
+## 📦 Model Specifications
 
-**Recommended Model**: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
-- **Size**: ~5GB (quantized Q4)
-- **Performance**: Excellent quality with fast inference
+### Recommended Model: llama2:13b-chat-q4_K_M
+- **Size**: ~7.3GB
+- **Parameters**: 13 Billion
+- **Quantization**: Q4_K_M (4-bit, good balance)
 - **Memory**: ~8GB RAM required
-- **Speed**: ~10-20 tokens/second on CPU
+- **Speed**: ~15-25 tokens/second on M1/M2 Mac
+- **Quality**: Excellent for general tasks and code generation
 
-**Alternative Models**:
-- Llama-2-7B-Chat-GGUF (smaller, faster)
-- Mistral-7B-Instruct-GGUF (better instruction following)
-- Neural-Chat-7B-GGUF (optimized for conversations)
+### Alternative Models
 
-### Performance Tuning
-
-**For GPU Acceleration** (CUDA):
+**Smaller/Faster:**
 ```bash
-CMAKE_ARGS="-DLLAMA_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+ollama pull llama3.2:3b    # 3B params, faster
+ollama pull mistral:latest # 7B params, good quality
 ```
 
-**For Metal Support** (macOS):
+**Larger/Better:**
 ```bash
-CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+ollama pull llama2:70b-chat-q4_K_M  # 70B params, best quality (requires 40GB+ RAM)
 ```
 
-**Optimization Parameters**:
-```python
-llm = LlamaCpp(
-    model_path="./models/llama-2-7b-chat.Q4_K_M.gguf",
-    n_gpu_layers=35,        # Offload 35 layers to GPU
-    n_threads=8,            # CPU threads for inference
-    n_batch=512,            # Batch size for processing
-    n_ctx=2048,             # Context window size
-    f16_kv=True,            # Use float16 for KV cache
-    verbose=False
-)
+### Embedding Model
+
+For semantic search or RAG systems:
+```bash
+ollama pull nomic-embed-text:latest
 ```
+
+## 📊 Performance Metrics
+
+### Typical Performance (M1 Mac, 16GB RAM)
+
+| Component | Time | Notes |
+|-----------|------|-------|
+| Router Decision | 200-400ms | Routing to appropriate agent |
+| Code Generation | 2-4s | Generated 50-100 lines |
+| Data Analysis | 1.5-3s | Complex analysis task |
+| Planning | 1-2s | Task decomposition |
+| Summarization | 1-2s | Final summary generation |
+| **Total Workflow** | **5-10s** | End-to-end task processing |
+
+### Performance Tuning Tips
+
+- For faster response, use smaller models like `llama3.2:3b`.
+- For better quality, especially in code generation, use `llama2:70b-chat-q4_K_M`.
+- Adjust `N_GPU_LAYERS` and `N_THREADS` in `.env` based on your system's GPU and CPU capabilities.
