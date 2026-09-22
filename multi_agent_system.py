@@ -7,8 +7,8 @@ import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, TypedDict
+from abc import ABC, abstractmethod
 from dotenv import load_dotenv
-from langchain_ollama import OllamaLLM
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 
@@ -16,11 +16,114 @@ load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# LLM Provider Abstract Base Class
+# ============================================================================
+
+class LLMProvider(ABC):
+    """Abstract base class for LLM providers"""
+    
+    @abstractmethod
+    def invoke(self, messages: List[BaseMessage] | str) -> str:
+        """Invoke the LLM with messages or a string prompt"""
+        pass
+    
+    @abstractmethod
+    def get_name(self) -> str:
+        """Get provider name for logging"""
+        pass
+
+
+class OllamaProvider(LLMProvider):
+    """Ollama LLM Provider"""
+    
+    def __init__(self, model_name: str, base_url: str, temperature: float = 0.7):
+        from langchain_ollama import OllamaLLM
+        self.llm = OllamaLLM(
+            model=model_name,
+            base_url=base_url,
+            temperature=temperature
+        )
+        self.model_name = model_name
+    
+    def invoke(self, messages: List[BaseMessage] | str) -> str:
+        """Invoke Ollama"""
+        return self.llm.invoke(messages)
+    
+    def get_name(self) -> str:
+        return f"Ollama ({self.model_name})"
+
+
+class LlamaCppProvider(LLMProvider):
+    """Llama.cpp LLM Provider using OpenAI-compatible API"""
+    
+    def __init__(self, model_name: str, base_url: str = "http://localhost:8080", temperature: float = 0.7):
+        from langchain_openai import ChatOpenAI
+        
+        self.model_name = model_name
+        self.base_url = base_url
+        
+        # Use OpenAI-compatible endpoint
+        self.llm = ChatOpenAI(
+            model=model_name,
+            base_url=base_url,
+            api_key="no-key",  # llama.cpp doesn't require auth
+            temperature=temperature
+        )
+    
+    def invoke(self, messages: List[BaseMessage] | str) -> str:
+        """Invoke Llama.cpp via OpenAI-compatible API"""
+        if isinstance(messages, str):
+            # Convert string to HumanMessage
+            messages = [HumanMessage(content=messages)]
+        
+        response = self.llm.invoke(messages)
+        return response.content
+    
+    def get_name(self) -> str:
+        return f"Llama.cpp ({self.model_name})"
+
+
+class LLMProviderFactory:
+    """Factory to create LLM providers based on configuration"""
+    
+    @staticmethod
+    def create_provider(provider_type: str, **kwargs) -> LLMProvider:
+        """
+        Create an LLM provider based on type
+        
+        Args:
+            provider_type: "ollama" or "llamacpp"
+            **kwargs: Provider-specific arguments
+        
+        Returns:
+            LLMProvider instance
+        """
+        if provider_type.lower() == "ollama":
+            return OllamaProvider(
+                model_name=kwargs.get("model_name", os.getenv("MODEL_NAME")),
+                base_url=kwargs.get("base_url", os.getenv("MODEL_PATH")),
+                temperature=kwargs.get("temperature", 0.7)
+            )
+        elif provider_type.lower() == "llamacpp":
+            return LlamaCppProvider(
+                model_name=kwargs.get("model_name", os.getenv("LLAMACPP_MODEL")),
+                base_url=kwargs.get("base_url", os.getenv("LLAMACPP_URL", "http://localhost:8080")),
+                temperature=kwargs.get("temperature", 0.7)
+            )
+        else:
+            raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+# ============================================================================
+# Agent Types and State
+# ============================================================================
+
 class AgentType(Enum):
     CODE_GENERATOR = "code_generator"
     DATA_ANALYST = "data_analyst"
     PLANNER = "planner"
-    SUMMERIZER = "summarizer"
+    SUMMARIZER = "summarizer"
 
 @dataclass
 class AgentState:
@@ -29,9 +132,11 @@ class AgentState:
     messages: List[BaseMessage] = field(default_factory=list)
     selected_agent: Optional[AgentType] = None
     result: Optional[str] = None
+    original_result: Optional[str] = None  # Add this to preserve original
     complexity_score: float = 0.5
     routing_reason: str = ""
     error: Optional[str] = None
+
 
 class AgentStateDict(TypedDict):
     task: str
@@ -42,6 +147,11 @@ class AgentStateDict(TypedDict):
     complexity_score: float
     routing_reason: str
     error: Optional[str]
+
+
+# ============================================================================
+# Multi-Agent Orchestrator
+# ============================================================================
 
 class MultiAgentOrchestrator:
     # Define system prompts as class constants
@@ -106,20 +216,21 @@ Output Format:
 - Define success criteria""",
     }
     
-    def __init__(self):
-        self.llm = OllamaLLM(
-            model=os.getenv("MODEL_NAME"),
-            base_url=os.getenv("MODEL_PATH"),
-            temperature=0.7
-        )
+    def __init__(self, provider_type: str = "ollama", **provider_kwargs):
+        """
+        Initialize the Multi-Agent Orchestrator
+        
+        Args:
+            provider_type: "ollama" or "llamacpp"
+            **provider_kwargs: Provider-specific configuration
+        """
+        # Create LLM provider
+        self.llm_provider = LLMProviderFactory.create_provider(provider_type, **provider_kwargs)
         self.graph = self._build_graph()
-        logger.info(f"✓ Initialized Ollama: {os.getenv('MODEL_NAME')}")
-    
+        logger.info(f"✓ Initialized Multi-Agent Orchestrator with {self.llm_provider.get_name()}")
 
     def _build_graph(self):
         """Build LangGraph workflow with conditional routing"""
-        from langgraph.graph import StateGraph, END
-        
         graph = StateGraph(AgentState)
         
         # Add nodes
@@ -127,7 +238,7 @@ Output Format:
         graph.add_node("code_generator", self._code_generator_node)
         graph.add_node("data_analyst", self._data_analyst_node)
         graph.add_node("planner", self._planner_node)
-        graph.add_node("summarize", self._summarize_node)  # Add summarizer
+        graph.add_node("summarize", self._summarize_node)
         
         # Set entry point
         graph.set_entry_point("route")
@@ -144,7 +255,7 @@ Output Format:
         # Add conditional edges
         graph.add_conditional_edges("route", route_decision)
         
-        # Route all agents to summarizer before END
+        # Route all agents to summarizer
         graph.add_edge("code_generator", "summarize")
         graph.add_edge("data_analyst", "summarize")
         graph.add_edge("planner", "summarize")
@@ -152,10 +263,9 @@ Output Format:
         # Summarizer goes to END
         graph.add_edge("summarize", END)
 
-        print(f"✓ Compiled LangGraph workflow: {graph.compile()}")
+        logger.info(f"✓ Compiled LangGraph workflow")
         return graph.compile()
 
-    
     def _route_node(self, state: AgentState) -> AgentState:
         """Route task synchronously"""
         system_msg = SystemMessage(
@@ -177,7 +287,7 @@ REASONING: [brief explanation]"""
         )
         
         all_messages = [system_msg, user_msg]
-        response = self.llm.invoke(all_messages)
+        response = self.llm_provider.invoke(all_messages)
         
         lines = response.strip().split('\n')
         agent = "planner"
@@ -204,40 +314,41 @@ REASONING: [brief explanation]"""
         logger.info(f"[{state.task_id}] Routed to {state.selected_agent.value}")
         
         return state
-    
 
     def _code_generator_node(self, state: AgentState) -> AgentState:
         """Code generator node with proper role-based messages"""
-        # Build message history with proper roles
-        messages = state.messages.copy()
-        
-        # Add system message (defines role)
         system_msg = SystemMessage(
             content=self.SYSTEM_PROMPTS[AgentType.CODE_GENERATOR]
         )
         
-        # Add task as human message (user instruction)
         user_msg = HumanMessage(
-            content=f"Task: {state.task}\n\nGenerate production-ready code."
+            content=f"""Task: {state.task}
+
+IMPORTANT INSTRUCTIONS:
+1. Write complete, working Python code
+2. Wrap ALL code in triple backticks with 'python' language identifier
+3. Example format:
+   ```python
+   def my_function():
+       pass
+   ```
+4. Include docstrings and error handling
+5. Provide a working example
+
+Generate the code now:"""
         )
         
-        # Build complete message stack
         all_messages = [system_msg, user_msg]
+        response = self.llm_provider.invoke(all_messages)
         
-        # Invoke LLM with proper message roles
-        response = self.llm.invoke(all_messages)
-        
-        # Add AI response to history
         state.result = response
+        state.original_result = response  # Save original before summarization
         state.messages.append(AIMessage(content=response))
         
         return state
-    
 
     def _data_analyst_node(self, state: AgentState) -> AgentState:
         """Data analyst node with proper role-based messages"""
-        messages = state.messages.copy()
-        
         system_msg = SystemMessage(
             content=self.SYSTEM_PROMPTS[AgentType.DATA_ANALYST]
         )
@@ -247,7 +358,7 @@ REASONING: [brief explanation]"""
         )
         
         all_messages = [system_msg, user_msg]
-        response = self.llm.invoke(all_messages)
+        response = self.llm_provider.invoke(all_messages)
         
         state.result = response
         state.messages.append(AIMessage(content=response))
@@ -256,8 +367,6 @@ REASONING: [brief explanation]"""
     
     def _planner_node(self, state: AgentState) -> AgentState:
         """Planner node with proper role-based messages"""
-        messages = state.messages.copy()
-        
         system_msg = SystemMessage(
             content=self.SYSTEM_PROMPTS[AgentType.PLANNER]
         )
@@ -267,25 +376,38 @@ REASONING: [brief explanation]"""
         )
         
         all_messages = [system_msg, user_msg]
-        response = self.llm.invoke(all_messages)
+        response = self.llm_provider.invoke(all_messages)
         
         state.result = response
         state.messages.append(AIMessage(content=response))
         return state
 
-    
     def _summarize_node(self, state: AgentState) -> AgentState:
-        """Summarize the result"""
-        prompt = f"""You are an expert summarizer.
+        """Summarize the result - but preserve code for code generator"""
+        
+        # Skip summarization for code generator (preserve original code)
+        if state.selected_agent == AgentType.CODE_GENERATOR:
+            logger.info(f"[{state.task_id}] Skipping summarization for code generator")
+            return state
+        
+        system_msg = SystemMessage(
+            content="""You are an expert executive summarizer.
 
-Task: {state.task}
-
-Summarize the key points and findings and provide actionable recommendations in an executive summary."""
-        response = self.llm.invoke(prompt)
+Provide a concise executive summary with:
+1. Key points
+2. Main findings
+3. Actionable recommendations"""
+        )
+        
+        user_msg = HumanMessage(
+            content=f"Task: {state.task}\n\nResult: {state.result}"
+        )
+        
+        all_messages = [system_msg, user_msg]
+        response = self.llm_provider.invoke(all_messages)
         state.result = response
         state.messages.append(AIMessage(content=response))
         return state
-
 
     async def process_task(self, task: str):
         """Process task using LangGraph"""
@@ -296,7 +418,7 @@ Summarize the key points and findings and provide actionable recommendations in 
         )
         state.messages.append(HumanMessage(content=task))
         
-        # Execute graph - returns dict
+        # Execute graph
         result_dict = self.graph.invoke(state)
         
         # Convert back to AgentState if needed
@@ -307,33 +429,83 @@ Summarize the key points and findings and provide actionable recommendations in 
         
         return result
 
-
     def execute_generated_code(self, result: AgentState) -> dict:
         """Execute generated code and capture output"""
-        if not result.result:
+        # Use original result if available (before summarization)
+        code_source = result.original_result or result.result
+        
+        if not code_source:
             return {"status": "error", "message": "No result to execute"}
         
-        # Extract Python code blocks
-        code_blocks = re.findall(r'```python\n(.*?)\n```', result.result, re.DOTALL)
+        logger.info(f"Attempting to extract code from result (length: {len(code_source)})")
         
+        # Try multiple patterns to extract code
+        code_blocks = []
+        
+        # Pattern 1: ```python ... ```
+        code_blocks = re.findall(r'```python\n(.*?)\n```', code_source, re.DOTALL)
+        if code_blocks:
+            logger.info(f"✓ Found code in ```python format")
+        
+        # Pattern 2: ```\n ... ``` (no language specified)
         if not code_blocks:
-            return {"status": "error", "message": "No code blocks found"}
+            code_blocks = re.findall(r'```\n(.*?)\n```', code_source, re.DOTALL)
+            if code_blocks:
+                logger.info(f"✓ Found code in ``` format (no language)")
         
-        code = code_blocks[0]
+        # Pattern 3: ```python (without newline)
+        if not code_blocks:
+            code_blocks = re.findall(r'```python(.*?)```', code_source, re.DOTALL)
+            if code_blocks:
+                logger.info(f"✓ Found code in ```python (no newline) format")
+                code_blocks = [code.strip() for code in code_blocks]
+        
+        # Pattern 4: ``` (without language, without newline)
+        if not code_blocks:
+            code_blocks = re.findall(r'```(.*?)```', code_source, re.DOTALL)
+            if code_blocks:
+                logger.info(f"✓ Found code in ``` (no newline) format")
+                code_blocks = [code.strip() for code in code_blocks]
+        
+        # Pattern 5: Look for def statements (fallback)
+        if not code_blocks:
+            def_blocks = re.findall(r'(def\s+\w+\(.*?\):.*?)(?=\ndef|\Z)', code_source, re.DOTALL)
+            if def_blocks:
+                code_blocks = def_blocks
+                logger.info(f"✓ Found code via def pattern matching")
+    
+        if not code_blocks:
+            logger.warning(f"No code blocks found in result")
+            logger.info(f"Result preview (first 500 chars):\n{code_source[:500]}")
+            return {
+                "status": "error",
+                "message": "No code blocks found in response",
+                "result_preview": code_source[:500]
+            }
+        
+        code = code_blocks[0].strip()
+        logger.info(f"Extracted code length: {len(code)} characters")
         
         # Write to temp file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
             f.write(code)
             temp_file = f.name
+            logger.info(f"Wrote code to {temp_file}")
         
         # Execute with timeout
         try:
+            logger.info(f"Executing code...")
             proc_result = subprocess.run(
                 ['python', temp_file],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
+            
+            if proc_result.returncode == 0:
+                logger.info(f"✓ Code executed successfully")
+            else:
+                logger.error(f"✗ Code execution failed with return code {proc_result.returncode}")
             
             return {
                 "status": "success",
@@ -342,11 +514,17 @@ Summarize the key points and findings and provide actionable recommendations in 
                 "return_code": proc_result.returncode
             }
         except subprocess.TimeoutExpired:
+            logger.error(f"✗ Code execution timeout")
             return {"status": "error", "message": "Execution timeout (>10s)"}
         except Exception as e:
+            logger.error(f"✗ Code execution error: {e}")
             return {"status": "error", "message": str(e)}
 
-# Add mock data
+
+# ============================================================================
+# Demo
+# ============================================================================
+
 MOCK_SALES_DATA = {
     "Q1": {"revenue": 125000, "units": 4500, "growth": 0.08},
     "Q2": {"revenue": 142000, "units": 5100, "growth": 0.136},
@@ -356,7 +534,27 @@ MOCK_SALES_DATA = {
 
 async def main():
     """Demo the multi-agent system"""
-    orchestrator = MultiAgentOrchestrator()
+    
+    # Choose provider: "ollama" or "llamacpp"
+    provider_type = os.getenv("LLM_PROVIDER", "ollama").lower()
+    
+    # Initialize orchestrator with selected provider
+    if provider_type == "ollama":
+        orchestrator = MultiAgentOrchestrator(
+            provider_type="ollama",
+            model_name=os.getenv("MODEL_NAME"),
+            base_url=os.getenv("MODEL_PATH"),
+            temperature=0.7
+        )
+    elif provider_type == "llamacpp":
+        orchestrator = MultiAgentOrchestrator(
+            provider_type="llamacpp",
+            model_name=os.getenv("LLAMACPP_MODEL", "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf"),
+            base_url=os.getenv("LLAMACPP_URL", "http://localhost:8080"),
+            temperature=0.7
+        )
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider_type}")
     
     # Task with real data
     sales_context = f"Sales data: {MOCK_SALES_DATA}"
