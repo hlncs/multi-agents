@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List, TypedDict
+from typing import Optional, List, TypedDict, Dict, Callable
 from abc import ABC, abstractmethod
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -125,6 +125,7 @@ class AgentType(Enum):
     PLANNER = "planner"
     SUMMARIZER = "summarizer"
 
+
 @dataclass
 class AgentState:
     task: str
@@ -132,10 +133,11 @@ class AgentState:
     messages: List[BaseMessage] = field(default_factory=list)
     selected_agent: Optional[AgentType] = None
     result: Optional[str] = None
-    original_result: Optional[str] = None  # Add this to preserve original
+    original_result: Optional[str] = None
     complexity_score: float = 0.5
     routing_reason: str = ""
     error: Optional[str] = None
+    next_agent: Optional[str] = None  # Configurable next agent
 
 
 class AgentStateDict(TypedDict):
@@ -144,9 +146,131 @@ class AgentStateDict(TypedDict):
     messages: List[BaseMessage]
     selected_agent: Optional[AgentType]
     result: Optional[str]
+    original_result: Optional[str]
     complexity_score: float
     routing_reason: str
     error: Optional[str]
+    next_agent: Optional[str]
+
+
+# ============================================================================
+# Agent Routing Configuration (Declarative)
+# ============================================================================
+
+AGENT_ROUTING_CONFIG = [
+    {
+        "agent_name": "route",
+        "node_method": "_route_node",
+        "next_agent": None  # Router conditionally routes to code_generator, data_analyst, or planner
+    },
+    {
+        "agent_name": "code_generator",
+        "node_method": "_code_generator_node",
+        "next_agent": "summarize"
+    },
+    {
+        "agent_name": "data_analyst",
+        "node_method": "_data_analyst_node",
+        "next_agent": "summarize"
+    },
+    {
+        "agent_name": "planner",
+        "node_method": "_planner_node",
+        "next_agent": "summarize"
+    },
+    {
+        "agent_name": "summarize",
+        "node_method": "_summarize_node",
+        "next_agent": None  # Final agent
+    }
+]
+
+
+class AgentRoutingConfig:
+    """
+    Load agent routing from declarative configuration
+    """
+    
+    def __init__(self, config: List[Dict] = None):
+        """
+        Initialize from configuration list
+        
+        Args:
+            config: List of agent config dicts with keys:
+                   - agent_name: Name of the agent
+                   - node_method: Method name (e.g., "_code_generator_node")
+                   - next_agent: Next agent name (None for final agent)
+        """
+        self.agents: Dict[str, Dict] = {}
+        self.final_agent: Optional[str] = None
+        
+        if config:
+            for agent_config in config:
+                self.add_agent_from_config(agent_config)
+    
+    def add_agent_from_config(self, agent_config: Dict):
+        """
+        Add agent from config dictionary
+        
+        Args:
+            agent_config: Dict with keys:
+                         - agent_name: str
+                         - node_method: str
+                         - next_agent: Optional[str]
+        """
+        agent_name = agent_config.get("agent_name")
+        node_method = agent_config.get("node_method")
+        next_agent = agent_config.get("next_agent")
+        
+        if not agent_name or not node_method:
+            raise ValueError(f"Invalid agent config: {agent_config}")
+        
+        self.agents[agent_name] = {
+            "node_method": node_method,
+            "next": next_agent
+        }
+        
+        # If next_agent is None, this is the final agent
+        if next_agent is None and agent_name != "route":
+            self.final_agent = agent_name
+        
+        logger.info(f"✓ Loaded agent '{agent_name}' (method: {node_method}) -> next: {next_agent}")
+    
+    def add_agent(self, agent_name: str, node_method: str, next_agent: Optional[str] = None):
+        """
+        Add agent programmatically
+        
+        Args:
+            agent_name: Name of the agent
+            node_method: Method name to call
+            next_agent: Next agent in chain
+        """
+        self.add_agent_from_config({
+            "agent_name": agent_name,
+            "node_method": node_method,
+            "next_agent": next_agent
+        })
+    
+    def set_final_agent(self, agent_name: str):
+        """Set the final agent in the workflow"""
+        self.final_agent = agent_name
+        logger.info(f"✓ Set final agent: '{agent_name}'")
+    
+    def get_next_agent(self, current_agent: str) -> Optional[str]:
+        """Get the next agent for current agent"""
+        if current_agent not in self.agents:
+            return self.final_agent
+        
+        next_agent = self.agents[current_agent].get("next")
+        return next_agent or self.final_agent
+    
+    def get_agent_names(self) -> List[str]:
+        """Get all configured agent names"""
+        return list(self.agents.keys())
+    
+    def get_node_method(self, agent_name: str) -> str:
+        """Get the node method name for an agent"""
+        return self.agents.get(agent_name, {}).get("node_method")
 
 
 # ============================================================================
@@ -214,37 +338,69 @@ Output Format:
 - Include timeline estimates
 - List risks and mitigation approaches
 - Define success criteria""",
+
+        AgentType.SUMMARIZER: """You are an expert executive summarizer.
+
+Role & Expertise:
+- Distilling complex information into key points
+- Generating clear, actionable recommendations
+- Executive-level communication and clarity
+- Synthesizing diverse information sources
+
+Behavioral Guidelines:
+- Be concise but comprehensive
+- Focus on actionable insights
+- Highlight key findings and recommendations
+
+Output Format:
+- Use clear headings
+- Bullet points for key findings
+- Concise executive summary
+- Specific recommendations""",
     }
     
-    def __init__(self, provider_type: str = "ollama", **provider_kwargs):
+    def __init__(self, provider_type: str = "ollama", routing_config: Optional[AgentRoutingConfig] = None, **provider_kwargs):
         """
         Initialize the Multi-Agent Orchestrator
         
         Args:
             provider_type: "ollama" or "llamacpp"
+            routing_config: AgentRoutingConfig instance (uses default if None)
             **provider_kwargs: Provider-specific configuration
         """
         # Create LLM provider
         self.llm_provider = LLMProviderFactory.create_provider(provider_type, **provider_kwargs)
+        
+        # Setup routing configuration
+        self.routing_config = routing_config or self._create_default_routing()
+        
+        # Build graph with dynamic routing
         self.graph = self._build_graph()
         logger.info(f"✓ Initialized Multi-Agent Orchestrator with {self.llm_provider.get_name()}")
+    
+    def _create_default_routing(self) -> AgentRoutingConfig:
+        """Create default routing configuration from declarative config"""
+        return AgentRoutingConfig(config=AGENT_ROUTING_CONFIG)
 
     def _build_graph(self):
-        """Build LangGraph workflow with conditional routing"""
+        """Build LangGraph workflow with configurable routing"""
         graph = StateGraph(AgentState)
         
-        # Add nodes
-        graph.add_node("route", self._route_node)
-        graph.add_node("code_generator", self._code_generator_node)
-        graph.add_node("data_analyst", self._data_analyst_node)
-        graph.add_node("planner", self._planner_node)
-        graph.add_node("summarize", self._summarize_node)
+        # Add all configured agents as nodes
+        for agent_name in self.routing_config.get_agent_names():
+            node_method_name = self.routing_config.get_node_method(agent_name)
+            
+            if hasattr(self, node_method_name):
+                node_method = getattr(self, node_method_name)
+                graph.add_node(agent_name, node_method)
+                logger.info(f"✓ Added node: {agent_name}")
         
         # Set entry point
         graph.set_entry_point("route")
         
-        # Conditional routing based on selected_agent
-        def route_decision(state: AgentState):
+        # Conditional routing from route node
+        def route_decision(state: AgentState) -> str:
+            """Route to appropriate agent"""
             if state.selected_agent == AgentType.CODE_GENERATOR:
                 return "code_generator"
             elif state.selected_agent == AgentType.DATA_ANALYST:
@@ -252,17 +408,14 @@ Output Format:
             else:
                 return "planner"
         
-        # Add conditional edges
         graph.add_conditional_edges("route", route_decision)
         
-        # Route all agents to summarizer
-        graph.add_edge("code_generator", "summarize")
+        # Add edges: code_generator and data_analyst and planner -> summarize -> END
+        graph.add_edge("code_generator", END)  # Skip summarizer for code
         graph.add_edge("data_analyst", "summarize")
         graph.add_edge("planner", "summarize")
-        
-        # Summarizer goes to END
         graph.add_edge("summarize", END)
-
+        
         logger.info(f"✓ Compiled LangGraph workflow")
         return graph.compile()
 
@@ -310,6 +463,7 @@ REASONING: [brief explanation]"""
         state.selected_agent = AgentType(agent)
         state.complexity_score = confidence
         state.routing_reason = reasoning
+        state.next_agent = agent  # Set next agent based on routing
         
         logger.info(f"[{state.task_id}] Routed to {state.selected_agent.value}")
         
@@ -388,15 +542,11 @@ Generate the code now:"""
         # Skip summarization for code generator (preserve original code)
         if state.selected_agent == AgentType.CODE_GENERATOR:
             logger.info(f"[{state.task_id}] Skipping summarization for code generator")
+            # Return state unchanged - this allows graph to continue to END
             return state
         
         system_msg = SystemMessage(
-            content="""You are an expert executive summarizer.
-
-Provide a concise executive summary with:
-1. Key points
-2. Main findings
-3. Actionable recommendations"""
+            content=self.SYSTEM_PROMPTS[AgentType.SUMMARIZER]
         )
         
         user_msg = HumanMessage(
@@ -535,26 +685,41 @@ MOCK_SALES_DATA = {
 async def main():
     """Demo the multi-agent system"""
     
-    # Choose provider: "ollama" or "llamacpp"
     provider_type = os.getenv("LLM_PROVIDER", "ollama").lower()
     
-    # Initialize orchestrator with selected provider
-    if provider_type == "ollama":
-        orchestrator = MultiAgentOrchestrator(
-            provider_type="ollama",
-            model_name=os.getenv("MODEL_NAME"),
-            base_url=os.getenv("MODEL_PATH"),
-            temperature=0.7
-        )
-    elif provider_type == "llamacpp":
-        orchestrator = MultiAgentOrchestrator(
-            provider_type="llamacpp",
-            model_name=os.getenv("LLAMACPP_MODEL", "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf"),
-            base_url=os.getenv("LLAMACPP_URL", "http://localhost:8080"),
-            temperature=0.7
-        )
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider_type}")
+    # Option 1: Use default routing from AGENT_ROUTING_CONFIG (recommended)
+    orchestrator = MultiAgentOrchestrator(provider_type=provider_type)
+    
+    # Option 2: Override with COMPLETE custom routing
+    # Uncomment below to use custom routing
+    # custom_config = AgentRoutingConfig(config=[
+    #     {
+    #         "agent_name": "route",
+    #         "node_method": "_route_node",
+    #         "next_agent": None
+    #     },
+    #     {
+    #         "agent_name": "code_generator",
+    #         "node_method": "_code_generator_node",
+    #         "next_agent": "summarize"
+    #     },
+    #     {
+    #         "agent_name": "data_analyst",
+    #         "node_method": "_data_analyst_node",
+    #         "next_agent": "summarize"
+    #     },
+    #     {
+    #         "agent_name": "planner",
+    #         "node_method": "_planner_node",
+    #         "next_agent": "summarize"
+    #     },
+    #     {
+    #         "agent_name": "summarize",
+    #         "node_method": "_summarize_node",
+    #         "next_agent": None
+    #     }
+    # ])
+    # orchestrator = MultiAgentOrchestrator(provider_type=provider_type, routing_config=custom_config)
     
     # Task with real data
     sales_context = f"Sales data: {MOCK_SALES_DATA}"
@@ -581,7 +746,7 @@ async def main():
         # Execute the generated code
         if result.selected_agent == AgentType.CODE_GENERATOR:
             exec_result = orchestrator.execute_generated_code(result)
-            print(f"Execution Status: {exec_result['status']}")
+            print(f"\nExecution Status: {exec_result['status']}")
             if exec_result['status'] == 'success':
                 print(f"Output:\n{exec_result['output']}")
             else:
